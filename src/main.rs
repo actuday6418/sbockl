@@ -1,80 +1,119 @@
-use glium::{uniform, glutin, implement_vertex, Surface};
+#[macro_use] extern crate gfx;
 
-fn main() {
-    let event_loop = glutin::event_loop::EventLoop::new();
-    let wb = glutin::window::WindowBuilder::new();
-    let cb = glutin::ContextBuilder::new();
-    let display = glium::Display::new(wb, cb, &event_loop).unwrap();
+use old_school_gfx_glutin_ext::*;
 
-    #[derive(Copy, Clone)]
-    struct Vertex {
-        position: [f32; 2],
+use glutin::{
+    event::{Event, KeyboardInput, VirtualKeyCode, WindowEvent},
+    window::WindowBuilder,
+    event_loop::{ControlFlow, EventLoop}
+};
+use gfx::{traits::FactoryExt,Device};
+
+type ColorFormat = gfx::format::Srgba8;
+type DepthFormat = gfx::format::DepthStencil;
+
+const SCREEN: [Vertex; 4] = [
+    Vertex { pos: [1.0, 1.0] },   // Top right
+    Vertex { pos: [-1.0, 1.0] },  // Top left
+    Vertex { pos: [-1.0, -1.0] }, // Bottom left
+    Vertex { pos: [1.0, -1.0] },  // Bottom right
+];
+
+const SCREEN_INDICES: [u16; 6] = [0, 1, 2, 0, 2, 3];
+
+const CLEAR_COLOR: [f32; 4] = [1.0; 4];
+
+gfx_defines! {
+    vertex Vertex {
+        pos: [f32; 2] = "position",
     }
 
-    implement_vertex!(Vertex, position);
+    pipeline pipe {
+        // Vertex buffer
+        vbuf: gfx::VertexBuffer<Vertex> = (),
 
-    let indices = glium::index::NoIndices(glium::index::PrimitiveType::TrianglesList);
+        // Uniforms
+        i_resolution: gfx::Global<[f32; 3]> = "iResolution",
 
-    let vertex_shader_src = std::fs::read("triangle.vert").expect("Unable to read shader!");
-    let vertex_shader_src = std::str::from_utf8(&vertex_shader_src).unwrap();
+        // Output color
+        frag_color: gfx::RenderTarget<ColorFormat> = "fragColor",
+    }
+}
 
-    let fragment_shader_src = std::fs::read("triangle.frag").expect("Unable to read shader!");
-    let fragment_shader_src = std::str::from_utf8(&fragment_shader_src).unwrap();
-    
-    let program =
-        glium::Program::from_source(&display, vertex_shader_src, fragment_shader_src, None)
-            .unwrap();
+fn main() {
+
+  let (mut height, mut width) = (1080f32, 1920f32);
+
+  let vert_src_buf = std::fs::read("shaders/default.vert").unwrap();
+  let frag_src_buf = std::fs::read("shaders/default.frag").unwrap();
+
+  let event_loop = EventLoop::new();
+  let window_config = WindowBuilder::new()
+      .with_title("shadertoy-rs")
+      .with_inner_size(glutin::dpi::PhysicalSize::new(width, height));
+  
+  let (window, mut device, mut factory, main_color, mut main_depth) =
+      glutin::ContextBuilder::new()
+          .with_gfx_color_depth::<ColorFormat, DepthFormat>()
+          .build_windowed(window_config, &event_loop).unwrap()
+          .init_gfx::<ColorFormat, DepthFormat>();
+
+  let mut encoder = gfx::Encoder::from(factory.create_command_buffer());
+
+  let pso = factory
+      .create_pipeline_simple(&vert_src_buf, &frag_src_buf, pipe::new())
+      .unwrap();
+
+  let (vertex_buffer, slice) =
+      factory.create_vertex_buffer_with_slice(&SCREEN, &SCREEN_INDICES[..]);
+
+  let mut data = pipe::Data {
+      vbuf: vertex_buffer,
+
+      i_resolution: [width, height, width / height],
+
+      frag_color: main_color,
+  };
+
 
     event_loop.run(move |event, _, control_flow| {
-        
-       let next_frame_time =
-            std::time::Instant::now() + std::time::Duration::from_nanos(6_666_667);
-        *control_flow = glutin::event_loop::ControlFlow::WaitUntil(next_frame_time);
+        *control_flow = ControlFlow::Poll;
+          match event {
+            Event::MainEventsCleared => window.window().request_redraw(),
+            Event::WindowEvent { event, .. } => match event {
+                WindowEvent::CloseRequested
+                | WindowEvent::KeyboardInput {
+                    input:
+                        KeyboardInput {
+                            virtual_keycode: Some(VirtualKeyCode::Escape),
+                            ..
+                        },
+                    ..
+                } => *control_flow = ControlFlow::Exit,
 
-        let vertex1 = Vertex {
-            position: [-1.0, -1.0],
-        };
-        let vertex2 = Vertex {
-            position: [1.0, -1.0],
-        };
-        let vertex3 = Vertex {
-            position: [-1.0, 1.0],
-        };
-        let vertex4 = Vertex {
-            position: [1.0, 1.0],
-        };
-        let shape = vec![vertex1, vertex2, vertex3, vertex4];
+                WindowEvent::Resized(size) => {
+                    window.update_gfx(&mut data.frag_color, &mut main_depth);
+                    window.resize(size);
 
-        let vertex_buffer = glium::VertexBuffer::new(&display, &shape).unwrap();
-
-        match event {
-            glutin::event::Event::WindowEvent { event, .. } => match event {
-                glutin::event::WindowEvent::CloseRequested => {
-                    *control_flow = glutin::event_loop::ControlFlow::Exit;
-                    return;
+                    width = size.width as f32;
+                    height = size.height as f32;
                 }
-                _ => return,
-            },
-            glutin::event::Event::NewEvents(cause) => match cause {
-                glutin::event::StartCause::ResumeTimeReached { .. } => (),
-                glutin::event::StartCause::Init => (),
-                _ => return,
-            },
-            _ => return,
-        }
+                _ => {}
+            }
 
-        let mut target = display.draw();
-        let res = target.get_dimensions();
-        target
-            .draw(
-                &vertex_buffer,
-                &indices,
-                &program,
-                &uniform!(resolution: [res.0 as f32, res.1 as f32]),
-                &Default::default(),
-            )
-            .unwrap();
-        println!("{:?}",target.get_dimensions());
-        target.finish().unwrap();
-    });
+                Event::RedrawRequested(_) => {
+                    data.i_resolution = [width, height, width / height];
+                    // draw a frame
+                    encoder.clear(&data.frag_color, CLEAR_COLOR);
+                    encoder.draw(&slice, &pso, &data);
+                    encoder.flush(&mut device);
+                    window.swap_buffers().unwrap();
+                    device.cleanup();
+                }
+
+                _ => {},
+            }
+        }
+    );
+    
 }
